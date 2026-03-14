@@ -37,7 +37,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ ruleId: string
     if (!rule) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const type = getSupportedRuleType((rule as any).conditions);
-    if (!type) return NextResponse.json({ error: "Unsupported rule_type in conditions" }, { status: 400 });
+    if (!type) {
+      return NextResponse.json(
+        {
+          error:
+            "Unsupported rule_type in conditions. Set conditions.rule_type (or .type or .kind) to one of: volume_spike, international_call_spike, premium_number_calls, roaming_activity, duplicate_cdr_detection, high_cost_destination; or use thresholds with metric call_count, total_revenue, or failed_rate."
+        },
+        { status: 400 }
+      );
+    }
 
     const { data: versions, error: vErr } = await supabase
       .from("fraud_rule_versions")
@@ -52,7 +60,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ ruleId: string
 
     const { data: cdrs, error: cErr } = await supabase
       .from("cdr_records")
-      .select("id,org_id,call_start_at,duration_seconds,a_party,b_party,destination_country,account_id,carrier_id,revenue_amount,cost_amount,source_row_hash")
+      .select("id,org_id,call_start_at,duration_seconds,a_party,b_party,destination_country,account_id,carrier_id,revenue_amount,cost_amount,source_row_hash,answer_status")
       .eq("org_id", orgId)
       .gte("call_start_at", fromDate.toISOString())
       .lte("call_start_at", toDate.toISOString())

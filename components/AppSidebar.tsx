@@ -63,7 +63,11 @@ function SidebarContent() {
                 </div>
                 <div className="space-y-1 pl-6">
                   {item.children.map((child) => {
-                    const active = pathname === child.href || pathname.startsWith(child.href + "/");
+                    const isExact = pathname === child.href;
+                    const isSubpath = pathname.startsWith(child.href + "/");
+                    const siblingHasLongerMatch =
+                      item.children.some((c) => c.href !== child.href && pathname.startsWith(c.href));
+                    const active = isExact || (isSubpath && !siblingHasLongerMatch);
                     return (
                       <Link
                         key={child.href}

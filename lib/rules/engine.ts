@@ -6,7 +6,8 @@ export type SupportedRuleType =
   | "premium_number_calls"
   | "roaming_activity"
   | "duplicate_cdr_detection"
-  | "high_cost_destination";
+  | "high_cost_destination"
+  | "high_failed_call_rate";
 
 export type FraudRuleRow = {
   id: string;
@@ -34,6 +35,7 @@ export type CdrRow = {
   revenue_amount: string | number | null;
   cost_amount: string | number | null;
   source_row_hash: string;
+  answer_status?: string | null;
 };
 
 type EvaluationWindow = {
@@ -74,16 +76,32 @@ function safeText(value: unknown) {
 
 function ruleTypeFromConditions(conditions: any): SupportedRuleType | null {
   const t = conditions?.rule_type ?? conditions?.type ?? conditions?.kind ?? null;
-  if (!t) return null;
-  const str = String(t);
-  switch (str) {
-    case "volume_spike":
-    case "international_call_spike":
-    case "premium_number_calls":
-    case "roaming_activity":
-    case "duplicate_cdr_detection":
-    case "high_cost_destination":
-      return str;
+  if (t) {
+    const str = String(t);
+    switch (str) {
+      case "volume_spike":
+      case "international_call_spike":
+      case "premium_number_calls":
+      case "roaming_activity":
+      case "duplicate_cdr_detection":
+      case "high_cost_destination":
+      case "high_failed_call_rate":
+        return str;
+      default:
+        break;
+    }
+  }
+  // Fallback: infer from thresholds shape (seed/legacy conditions without rule_type)
+  const first = Array.isArray(conditions?.thresholds) ? conditions.thresholds[0] : null;
+  const metric = first?.metric != null ? String(first.metric).trim() : "";
+  switch (metric) {
+    case "call_count":
+      return "volume_spike";
+    case "total_revenue":
+    case "cost_amount":
+      return "high_cost_destination";
+    case "failed_rate":
+      return "high_failed_call_rate";
     default:
       return null;
   }
@@ -166,6 +184,19 @@ function duplicateKey(row: CdrRow) {
     new Date(row.call_start_at).toISOString().slice(0, 16), // minute bucket
     String(row.duration_seconds ?? 0)
   ].join("|");
+}
+
+function getDimensionValue(row: CdrRow, dimensionType: string): string {
+  const t = (dimensionType ?? "").trim().toLowerCase();
+  if (t === "account_id") return safeText(row.account_id);
+  if (t === "carrier_id") return safeText(row.carrier_id);
+  if (t === "destination_country") return (row.destination_country ?? "").trim().toUpperCase() || "—";
+  return "—";
+}
+
+function isFailedCall(row: CdrRow): boolean {
+  const s = String((row as any).answer_status ?? "").trim().toLowerCase();
+  return s === "failed" || s === "no_answer" || s === "busy";
 }
 
 function evaluateRule(type: SupportedRuleType, rule: FraudRuleRow, versionId: string, window: EvaluationWindow, cdrRows: CdrRow[]) {
@@ -327,6 +358,43 @@ function evaluateRule(type: SupportedRuleType, rule: FraudRuleRow, versionId: st
       return alerts;
     }
 
+    case "high_failed_call_rate": {
+      const dimType = (rule.dimension_type ?? "carrier_id").trim() || "carrier_id";
+      const totals = new Map<string, number>();
+      const failedCounts = new Map<string, number>();
+      for (const r of rows) {
+        const dim = getDimensionValue(r, dimType);
+        totals.set(dim, (totals.get(dim) ?? 0) + 1);
+        if (isFailedCall(r)) failedCounts.set(dim, (failedCounts.get(dim) ?? 0) + 1);
+      }
+      const alerts: EngineAlert[] = [];
+      const rateThreshold = Math.max(0, Math.min(1, threshold)); // 0..1
+      for (const [dim, total] of totals.entries()) {
+        if (total === 0) continue;
+        const failed = failedCounts.get(dim) ?? 0;
+        const rate = failed / total;
+        if (rateThreshold > 0 && rate >= rateThreshold) {
+          alerts.push(
+            makeAlert(
+              dimType,
+              dim,
+              `${rule.name} — ${dim}`,
+              {
+                type,
+                [dimType]: dim,
+                totalCalls: total,
+                failedCalls: failed,
+                failedRate: Math.round(rate * 10000) / 100,
+                threshold: rateThreshold,
+                window_minutes: rule.window_minutes
+              }
+            )
+          );
+        }
+      }
+      return alerts;
+    }
+
     default:
       return [];
   }
@@ -405,7 +473,7 @@ export async function runRuleEvaluation(params: {
 
   const { data: cdrRaw, error: cErr } = await supabase
     .from("cdr_records")
-    .select("id,org_id,call_start_at,duration_seconds,a_party,b_party,destination_country,account_id,carrier_id,revenue_amount,cost_amount,source_row_hash")
+    .select("id,org_id,call_start_at,duration_seconds,a_party,b_party,destination_country,account_id,carrier_id,revenue_amount,cost_amount,source_row_hash,answer_status")
     .eq("org_id", orgId)
     .gte("call_start_at", maxWin.windowStart.toISOString())
     .lte("call_start_at", maxWin.windowEnd.toISOString())

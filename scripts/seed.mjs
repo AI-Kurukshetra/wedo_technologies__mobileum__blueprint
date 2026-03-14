@@ -85,17 +85,54 @@ async function main() {
   const rng = mulberry32(seed);
   console.log("Seeding TeleGuard Pro…", { seed });
 
+  // 0) Cleanup — remove old seed data so re-runs are safe
+  const slugsToClean = ["acme", "beta", "meridian", "pinnacle"];
+  console.log("Cleaning up old seed data for slugs:", slugsToClean.join(", "));
+
+  const { data: oldOrgs } = await supabase
+    .from("orgs")
+    .select("id,slug")
+    .in("slug", slugsToClean);
+
+  if (oldOrgs?.length) {
+    for (const org of oldOrgs) {
+      const { error: delErr } = await supabase.from("orgs").delete().eq("id", org.id);
+      if (delErr) console.warn(`  Warning: could not delete org ${org.slug}:`, delErr.message);
+      else console.log(`  Deleted org "${org.slug}" and all cascaded data.`);
+    }
+  }
+
+  const oldEmails = [
+    "admin@acme.example", "manager@acme.example", "analyst@acme.example",
+    "admin@beta.example", "readonly@beta.example",
+    "james.wilson@meridian-telecom.com", "sarah.mitchell@meridian-telecom.com",
+    "david.chen@meridian-telecom.com", "rachel.thompson@pinnacle-comms.com",
+    "michael.roberts@pinnacle-comms.com"
+  ];
+  const { data: allAuthUsers } = await supabase.auth.admin.listUsers({ perPage: 500 });
+  if (allAuthUsers?.users) {
+    for (const au of allAuthUsers.users) {
+      if (oldEmails.includes(au.email?.toLowerCase())) {
+        const { error: delUserErr } = await supabase.auth.admin.deleteUser(au.id);
+        if (delUserErr) console.warn(`  Warning: could not delete user ${au.email}:`, delUserErr.message);
+        else console.log(`  Deleted auth user: ${au.email}`);
+      }
+    }
+  }
+
+  console.log("Cleanup complete. Inserting fresh seed data…\n");
+
   // 1) Orgs
-  const orgA = await upsertOrg(supabase, { name: "Acme Telco", slug: "acme" });
-  const orgB = await upsertOrg(supabase, { name: "Beta MVNO", slug: "beta" });
+  const orgA = await upsertOrg(supabase, { name: "Meridian Telecom", slug: "meridian" });
+  const orgB = await upsertOrg(supabase, { name: "Pinnacle Communications", slug: "pinnacle" });
 
   // 2) Users (Auth)
   const users = [
-    { email: "admin@acme.example", role: "admin", org: orgA, org_name: orgA.name },
-    { email: "manager@acme.example", role: "manager", org: orgA, org_name: orgA.name },
-    { email: "analyst@acme.example", role: "analyst", org: orgA, org_name: orgA.name },
-    { email: "admin@beta.example", role: "admin", org: orgB, org_name: orgB.name },
-    { email: "readonly@beta.example", role: "read_only", org: orgB, org_name: orgB.name }
+    { email: "james.wilson@meridian-telecom.com", role: "admin", org: orgA, org_name: orgA.name, full_name: "James Wilson" },
+    { email: "sarah.mitchell@meridian-telecom.com", role: "manager", org: orgA, org_name: orgA.name, full_name: "Sarah Mitchell" },
+    { email: "david.chen@meridian-telecom.com", role: "analyst", org: orgA, org_name: orgA.name, full_name: "David Chen" },
+    { email: "rachel.thompson@pinnacle-comms.com", role: "admin", org: orgB, org_name: orgB.name, full_name: "Rachel Thompson" },
+    { email: "michael.roberts@pinnacle-comms.com", role: "read_only", org: orgB, org_name: orgB.name, full_name: "Michael Roberts" }
   ];
 
   const createdUsers = [];
@@ -103,7 +140,7 @@ async function main() {
     const user = await getOrCreateUser(supabase, {
       email: u.email,
       password: seedPassword,
-      metadata: { org_name: u.org_name }
+      metadata: { org_name: u.org_name, full_name: u.full_name }
     });
     createdUsers.push({ ...u, user });
   }
@@ -118,8 +155,8 @@ async function main() {
     .from("notification_policies")
     .upsert(
       [
-        { org_id: orgA.id, enabled: true, min_severity: "high", email_recipients: ["fraud@acme.example"] },
-        { org_id: orgB.id, enabled: true, min_severity: "critical", email_recipients: ["noc@beta.example"] }
+        { org_id: orgA.id, enabled: true, min_severity: "high", email_recipients: ["fraud-ops@meridian-telecom.com"] },
+        { org_id: orgB.id, enabled: true, min_severity: "critical", email_recipients: ["noc@pinnacle-comms.com"] }
       ],
       { onConflict: "org_id" }
     );
@@ -128,8 +165,8 @@ async function main() {
   const { data: importsA, error: importsAErr } = await supabase
     .from("cdr_imports")
     .insert([
-      { org_id: orgA.id, status: "processed", source: "seed", original_filename: "seed_acme_1.csv", storage_object_path: "seed/acme/1.csv" },
-      { org_id: orgA.id, status: "processed", source: "seed", original_filename: "seed_acme_2.csv", storage_object_path: "seed/acme/2.csv" }
+      { org_id: orgA.id, status: "processed", source: "sftp", original_filename: "meridian_cdr_export_2026-03-10.csv", storage_object_path: "imports/meridian/cdr_export_2026-03-10.csv" },
+      { org_id: orgA.id, status: "processed", source: "sftp", original_filename: "meridian_cdr_export_2026-03-12.csv", storage_object_path: "imports/meridian/cdr_export_2026-03-12.csv" }
     ])
     .select("id,org_id");
   if (importsAErr) throw importsAErr;
@@ -137,7 +174,7 @@ async function main() {
   const { data: importsB, error: importsBErr } = await supabase
     .from("cdr_imports")
     .insert([
-      { org_id: orgB.id, status: "processed", source: "seed", original_filename: "seed_beta_1.csv", storage_object_path: "seed/beta/1.csv" }
+      { org_id: orgB.id, status: "processed", source: "api", original_filename: "pinnacle_voice_records_2026-03-11.csv", storage_object_path: "imports/pinnacle/voice_records_2026-03-11.csv" }
     ])
     .select("id,org_id");
   if (importsBErr) throw importsBErr;
@@ -188,7 +225,7 @@ async function main() {
       org_id: org.id,
       rule_id: r.id,
       version: 1,
-      snapshot: { ...r, version: 1, created_at: iso(Date.now()), seed_index: idx }
+      snapshot: { ...r, version: 1, created_at: iso(Date.now()) }
     }));
     const { data: ruleVersions, error: vErr } = await supabase
       .from("fraud_rule_versions")
@@ -203,13 +240,33 @@ async function main() {
 
   // 7) CDR records (10k)
   const destinationCountries = ["US", "GB", "CA", "AU", "NG", "PK", "GH", "DE", "FR", "ES"];
-  const carriers = ["TRK-1", "TRK-2", "TRK-9"];
-  const accountsA = ["ACME-001", "ACME-002", "ACME-003"];
-  const accountsB = ["BETA-001", "BETA-002"];
+  const carriers = ["GlobalConnect", "TransAtlantic Routes", "Pacific Gateway", "EuroLink Carrier", "AfriVoice Transit"];
+  const accountsA = ["MRD-10042", "MRD-10087", "MRD-10153", "MRD-10201", "MRD-10265"];
+  const accountsB = ["PNC-20034", "PNC-20078", "PNC-20112"];
   const statuses = ["answered", "failed", "no_answer"];
 
   const now = Date.now();
   const sevenDays = 7 * 24 * 60 * 60 * 1000;
+
+  const countryDialCodes = {
+    US: { code: "1", len: 10 },
+    GB: { code: "44", len: 10 },
+    CA: { code: "1", len: 10 },
+    AU: { code: "61", len: 9 },
+    NG: { code: "234", len: 10 },
+    PK: { code: "92", len: 10 },
+    GH: { code: "233", len: 9 },
+    DE: { code: "49", len: 11 },
+    FR: { code: "33", len: 9 },
+    ES: { code: "34", len: 9 }
+  };
+
+  function genPhoneNumber(countryCode, digitLen) {
+    let num = "";
+    for (let d = 0; d < digitLen; d++) num += Math.floor(rng() * 10);
+    if (num[0] === "0") num = String(Math.floor(1 + rng() * 8)) + num.slice(1);
+    return `+${countryCode}${num}`;
+  }
 
   function genCdr({ org, importId, accountList }) {
     const start = now - Math.floor(rng() * sevenDays);
@@ -219,11 +276,16 @@ async function main() {
     const accountId = pick(rng, accountList);
     const carrierId = pick(rng, carriers);
     const answerStatus = pick(rng, statuses);
-    const revenue = Number((rng() * 0.8).toFixed(6));
-    const cost = Number((revenue * (0.6 + rng() * 0.25)).toFixed(6));
-    const aParty = `+1${Math.floor(2000000000 + rng() * 7999999999)}`;
-    const bParty = `+${dest === "US" ? "1" : dest === "GB" ? "44" : "234"}${Math.floor(2000000000 + rng() * 7999999999)}`;
-    const destinationPrefix = dest === "US" ? "+1" : dest === "GB" ? "+44" : "+234";
+    const revenue = Number((0.05 + rng() * 0.75).toFixed(6));
+    const isLeakage = rng() < 0.36;
+    const costMultiplier = isLeakage ? (1.35 + rng() * 0.65) : (0.5 + rng() * 0.28);
+    const cost = Number((revenue * costMultiplier).toFixed(6));
+    const originCountry = pick(rng, ["US", "GB", "DE"]);
+    const { code: origCode, len: origLen } = countryDialCodes[originCountry];
+    const { code: destCode, len: destLen } = countryDialCodes[dest];
+    const aParty = genPhoneNumber(origCode, origLen);
+    const bParty = genPhoneNumber(destCode, destLen);
+    const destinationPrefix = `+${destCode}`;
 
     const hashSource = `${org.id}|${importId}|${start}|${duration}|${aParty}|${bParty}|${dest}|${accountId}|${carrierId}|${answerStatus}|${revenue}|${cost}`;
 
@@ -235,7 +297,7 @@ async function main() {
       call_start_at: iso(start),
       call_end_at: iso(end),
       duration_seconds: duration,
-      direction: "outbound",
+      direction: pick(rng, ["outbound", "outbound", "outbound", "inbound"]),
       answer_status: answerStatus,
       a_party: aParty,
       b_party: bParty,
@@ -248,7 +310,7 @@ async function main() {
       revenue_amount: revenue,
       cost_amount: cost,
       currency: "USD",
-      raw: { seed: true }
+      raw: {}
     };
   }
 
@@ -262,6 +324,147 @@ async function main() {
 
   console.log(`Inserting cdr_records: ${cdrs.length}`);
   await insertInBatches(supabase, "cdr_records", cdrs, 1000);
+
+  // 7b) Partners, agreements & settlements (for Interconnect analytics)
+  const partnerDefs = [
+    { name: "GlobalConnect Ltd", partner_type: "carrier", country_code: "GB", contact_email: "settlements@globalconnect.co.uk" },
+    { name: "TransAtlantic Routes Inc", partner_type: "carrier", country_code: "US", contact_email: "billing@transatlantic-routes.com" },
+    { name: "Pacific Gateway Telecom", partner_type: "carrier", country_code: "AU", contact_email: "finance@pacificgateway.com.au" },
+    { name: "EuroLink Carrier GmbH", partner_type: "carrier", country_code: "DE", contact_email: "abrechnung@eurolink-carrier.de" },
+    { name: "AfriVoice Transit", partner_type: "carrier", country_code: "NG", contact_email: "accounts@afrivoice-transit.ng" }
+  ];
+
+  const { data: partnersA, error: partnersAErr } = await supabase
+    .from("partners")
+    .insert(partnerDefs.map((p) => ({ ...p, org_id: orgA.id })))
+    .select("id,name,org_id");
+  if (partnersAErr) throw partnersAErr;
+
+  const { data: partnersB, error: partnersBErr } = await supabase
+    .from("partners")
+    .insert(partnerDefs.slice(0, 3).map((p) => ({ ...p, org_id: orgB.id })))
+    .select("id,name,org_id");
+  if (partnersBErr) throw partnersBErr;
+
+  const agreementsData = [];
+  for (const p of partnersA) {
+    agreementsData.push({
+      org_id: orgA.id,
+      partner_id: p.id,
+      name: `${p.name} — Voice Interconnect Agreement`,
+      agreement_type: "interconnect",
+      start_date: "2025-01-01",
+      end_date: "2026-12-31",
+      terms: { rate_per_minute: Number((0.02 + rng() * 0.06).toFixed(4)), currency: "USD" }
+    });
+  }
+  for (const p of partnersB) {
+    agreementsData.push({
+      org_id: orgB.id,
+      partner_id: p.id,
+      name: `${p.name} — Wholesale Voice Agreement`,
+      agreement_type: "interconnect",
+      start_date: "2025-06-01",
+      end_date: "2026-12-31",
+      terms: { rate_per_minute: Number((0.03 + rng() * 0.05).toFixed(4)), currency: "USD" }
+    });
+  }
+
+  const { data: agreements, error: agreementsErr } = await supabase
+    .from("agreements")
+    .insert(agreementsData)
+    .select("id,org_id,partner_id");
+  if (agreementsErr) throw agreementsErr;
+
+  const settlementsData = [];
+  const weekStarts = [];
+  for (let w = 6; w >= 0; w--) {
+    const d = new Date(now - w * 7 * 24 * 60 * 60 * 1000);
+    weekStarts.push(d.toISOString().slice(0, 10));
+  }
+
+  for (const agr of agreements) {
+    for (const ws of weekStarts) {
+      const periodEnd = new Date(new Date(ws).getTime() + 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const amountDue = Number((500 + rng() * 4500).toFixed(2));
+      const hasVariance = rng() < 0.4;
+      const amountPaid = hasVariance ? Number((amountDue * (0.7 + rng() * 0.2)).toFixed(2)) : amountDue;
+      settlementsData.push({
+        org_id: agr.org_id,
+        partner_id: agr.partner_id,
+        agreement_id: agr.id,
+        period_start: ws,
+        period_end: periodEnd,
+        currency: "USD",
+        amount_due: amountDue,
+        amount_paid: amountPaid,
+        status: amountPaid === amountDue ? "settled" : "disputed"
+      });
+    }
+  }
+
+  const { error: settlementsErr } = await supabase.from("settlements").insert(settlementsData);
+  if (settlementsErr) throw settlementsErr;
+  console.log(`Inserted partners: ${partnersA.length + partnersB.length}, agreements: ${agreements.length}, settlements: ${settlementsData.length}`);
+
+  // 7c) Pipeline events (for Admin → Pipeline page)
+  const cdrMinTs = cdrs.length ? Math.min(...cdrs.map((c) => new Date(c.call_start_at).getTime())) : now;
+  const cdrMaxTs = cdrs.length ? Math.max(...cdrs.map((c) => new Date(c.call_end_at || c.call_start_at).getTime())) : now;
+  const fromIso = iso(cdrMinTs);
+  const toIso = iso(cdrMaxTs);
+
+  const pipelineEvents = [];
+  const pipelineStatuses = ["processed", "processed", "processed", "pending", "failed"];
+  let eventIdx = 0;
+  for (const imp of importsA) {
+    const status = pipelineStatuses[eventIdx % pipelineStatuses.length];
+    const attemptedRows = Math.floor(2000 + rng() * 2000);
+    pipelineEvents.push({
+      org_id: orgA.id,
+      event_type: "cdr.ingested",
+      status,
+      dedup_key: sha256(`seed-${orgA.id}-${imp.id}-${eventIdx}`),
+      payload: {
+        source: "csv_import",
+        importId: imp.id,
+        fromIso,
+        toIso,
+        attemptedRows,
+        errors: status === "failed" ? Math.floor(10 + rng() * 50) : 0
+      },
+      attempt_count: status === "failed" ? 3 : 1,
+      next_attempt_at: status === "pending" ? iso(now + 60 * 1000) : null,
+      processed_at: status === "processed" ? iso(now - 5 * 60 * 1000) : null,
+      last_error: status === "failed" ? "Simulated failure: aggregation timeout" : null
+    });
+    eventIdx++;
+  }
+  for (const imp of importsB) {
+    const status = pick(rng, ["processed", "pending"]);
+    pipelineEvents.push({
+      org_id: orgB.id,
+      event_type: "cdr.ingested",
+      status,
+      dedup_key: sha256(`seed-${orgB.id}-${imp.id}-${eventIdx}`),
+      payload: {
+        source: "api",
+        importId: imp.id,
+        fromIso,
+        toIso,
+        attemptedRows: Math.floor(1000 + rng() * 1500),
+        errors: 0
+      },
+      attempt_count: 1,
+      next_attempt_at: status === "pending" ? iso(now + 2 * 60 * 1000) : null,
+      processed_at: status === "processed" ? iso(now - 10 * 60 * 1000) : null,
+      last_error: null
+    });
+    eventIdx++;
+  }
+
+  const { error: pipelineErr } = await supabase.from("pipeline_events").insert(pipelineEvents);
+  if (pipelineErr) throw pipelineErr;
+  console.log(`Inserted pipeline_events: ${pipelineEvents.length}`);
 
   // 8) Alerts (100)
   function makeAlert(org, pack) {
@@ -299,9 +502,10 @@ async function main() {
           callCount: Math.floor(50 + rng() * 500),
           totalDurationSeconds: Math.floor(1000 + rng() * 20000),
           failedRate: Number((rng() * 0.9).toFixed(2)),
-          totalRevenue: Number((rng() * 9000).toFixed(6))
-        },
-        seed: true
+          totalRevenue: Number((500 + rng() * 8500).toFixed(2)),
+          avgCallDuration: Number((5 + rng() * 180).toFixed(1)),
+          uniqueDestinations: Math.floor(2 + rng() * 25)
+        }
       },
       assigned_to_user_id: null
     };
@@ -322,59 +526,120 @@ async function main() {
     return acc;
   }, {});
 
+  const caseTitlesA = [
+    "Unusual international traffic spike on account {acct}",
+    "Suspected SIM box fraud — {acct}",
+    "Premium rate number abuse detected — {acct}",
+    "Wangiri callback scheme targeting {acct} subscribers",
+    "Bypass routing anomaly — carrier mismatch for {acct}",
+    "Revenue leakage investigation — {acct}",
+    "Abnormal short-duration call pattern on {acct}",
+    "Unauthorized roaming traffic from {acct}",
+    "IRSF pattern flagged for {acct} destinations",
+    "High-volume CLI spoofing on {acct}"
+  ];
+  const caseTitlesB = [
+    "Suspected subscription fraud — {acct}",
+    "Unusual outbound traffic to high-risk destination — {acct}",
+    "Potential PBX hacking — {acct}",
+    "Traffic pumping anomaly — {acct}",
+    "Interconnect bypass detected — {acct}"
+  ];
+  const caseDescriptionsA = [
+    "Multiple fraud rules triggered for this account within 24 hours. Traffic analysis indicates a sharp deviation from baseline calling patterns with calls routed to high-cost international destinations.",
+    "Automated detection flagged abnormal call volume originating from this account. Initial review shows over 400 concurrent sessions to premium-rate numbers across three countries.",
+    "Carrier-level analysis revealed routing discrepancies consistent with SIM box or bypass fraud. Revenue impact estimated at $2,300 over the last 48 hours.",
+    "This account exhibited a sudden spike in short-duration calls (under 3 seconds) to West African destinations, consistent with known Wangiri fraud patterns.",
+    "Correlated alerts suggest coordinated abuse across multiple subscriber lines tied to this account. Escalated for detailed forensic review."
+  ];
+  const caseDescriptionsB = [
+    "Traffic analysis shows this account generated an unusually high volume of calls to known IRSF test numbers. Revenue leakage risk flagged for immediate review.",
+    "Monitoring detected repeated call attempts to premium-rate numbers in Eastern Europe, inconsistent with the account's historical usage profile.",
+    "Interconnect partner reported suspicious traffic volumes from this account. Cross-referencing with internal CDR data to validate findings."
+  ];
+
   const cases = [];
   for (let i = 0; i < 20; i++) {
+    const acct = pick(rng, accountsA);
+    const titleTemplate = pick(rng, caseTitlesA);
+    const status = pick(rng, ["open", "in_review", "closed"]);
     cases.push({
       org_id: orgA.id,
-      title: `Investigation — ${pick(rng, accountsA)}`,
-      status: pick(rng, ["open", "in_review", "closed"]),
+      title: titleTemplate.replace("{acct}", acct),
+      status,
       severity: pick(rng, ["medium", "high", "critical"]),
-      owner_user_id: createdUsers.find((u) => u.email === "analyst@acme.example").user.id,
-      outcome: null,
-      description: "Seeded case for demo workflows."
+      owner_user_id: createdUsers.find((u) => u.email === "david.chen@meridian-telecom.com").user.id,
+      outcome: status === "closed" ? pick(rng, ["confirmed_fraud", "false_positive", "inconclusive"]) : null,
+      description: pick(rng, caseDescriptionsA)
     });
   }
   for (let i = 0; i < 10; i++) {
+    const acct = pick(rng, accountsB);
+    const titleTemplate = pick(rng, caseTitlesB);
+    const status = pick(rng, ["open", "in_review", "closed"]);
     cases.push({
       org_id: orgB.id,
-      title: `Investigation — ${pick(rng, accountsB)}`,
-      status: pick(rng, ["open", "in_review", "closed"]),
+      title: titleTemplate.replace("{acct}", acct),
+      status,
       severity: pick(rng, ["low", "medium", "high"]),
-      owner_user_id: createdUsers.find((u) => u.email === "admin@beta.example").user.id,
-      outcome: null,
-      description: "Seeded case for demo workflows."
+      owner_user_id: createdUsers.find((u) => u.email === "rachel.thompson@pinnacle-comms.com").user.id,
+      outcome: status === "closed" ? pick(rng, ["confirmed_fraud", "false_positive"]) : null,
+      description: pick(rng, caseDescriptionsB)
     });
   }
 
   const { data: insertedCases, error: casesErr } = await supabase.from("cases").insert(cases).select("id,org_id");
   if (casesErr) throw casesErr;
 
+  const timelineNotes = [
+    "Opened investigation based on automated alert correlation. Pulling CDR records for the affected time window.",
+    "Initial analysis complete — confirmed abnormal traffic patterns to high-risk destinations. Escalating to senior analyst.",
+    "Contacted carrier partner to verify routing paths. Awaiting response on interconnect logs.",
+    "Cross-referenced subscriber IMSI data with known fraud databases. Two matches found — flagging for further review.",
+    "Revenue impact assessment: estimated $1,850 in potential losses over the past 72 hours. Recommending temporary account suspension.",
+    "Spoke with account manager — customer confirmed no authorized international activity during flagged period.",
+    "Updated rule thresholds based on findings. New detection window reduced from 30 to 15 minutes for this pattern.",
+    "Closing investigation — confirmed as false positive after manual CDR review. Adjusted sensitivity on triggering rule.",
+    "Linked three additional alerts to this case. All show correlated traffic to the same destination prefix.",
+    "Forensic review indicates SIM box usage. Prepared evidence package for regulatory submission."
+  ];
+
   const caseAlerts = [];
+  const seenCaseAlertKeys = new Set();
   const caseEvents = [];
   for (const c of insertedCases) {
     const pool = insertedAlertsByOrg[c.org_id] ?? [];
     const linkCount = Math.max(1, Math.floor(rng() * 4));
     for (let i = 0; i < linkCount; i++) {
       const alertId = pick(rng, pool);
+      const key = `${c.id}|${alertId}`;
+      if (seenCaseAlertKeys.has(key)) continue;
+      seenCaseAlertKeys.add(key);
       caseAlerts.push({ org_id: c.org_id, case_id: c.id, alert_id: alertId });
     }
-    caseEvents.push({
-      org_id: c.org_id,
-      case_id: c.id,
-      actor_user_id: null,
-      event_type: "note",
-      message: "Seeded timeline event.",
-      metadata: { seed: true }
-    });
+    const eventCount = 1 + Math.floor(rng() * 3);
+    for (let e = 0; e < eventCount; e++) {
+      caseEvents.push({
+        org_id: c.org_id,
+        case_id: c.id,
+        actor_user_id: null,
+        event_type: pick(rng, ["note", "note", "status_change", "assignment"]),
+        message: pick(rng, timelineNotes),
+        metadata: {}
+      });
+    }
   }
 
   await insertInBatches(supabase, "case_alerts", caseAlerts, 1000);
   await insertInBatches(supabase, "case_events", caseEvents, 1000);
 
-  console.log("Seed complete.");
-  console.log("Orgs:", orgA.slug, orgB.slug);
-  console.log("Users created/ensured:", createdUsers.map((u) => u.email).join(", "));
-  console.log("Seed password:", seedPassword);
+  console.log("\nSeed complete.");
+  console.log("───────────────────────────────────────");
+  console.log("Organizations:", orgA.name, `(${orgA.slug})`, "|", orgB.name, `(${orgB.slug})`);
+  console.log("Users created/ensured:");
+  for (const u of createdUsers) console.log(`  • ${u.full_name} <${u.email}> [${u.role}]`);
+  console.log("Password for all users:", seedPassword);
+  console.log("───────────────────────────────────────");
 }
 
 main().catch((e) => {

@@ -88,7 +88,7 @@ export default function AdminPipelinePage() {
         enableHiding: false,
         cell: ({ row }) => {
           const r = row.original;
-          const canRetry = r.status === "failed" || r.status === "dead_lettered";
+          const canRetry = ["failed", "dead_lettered", "processed"].includes(r.status);
           return (
             <div className="flex justify-end">
               <Button

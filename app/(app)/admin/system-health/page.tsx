@@ -55,7 +55,7 @@ export default function SystemHealthPage() {
     <div className="space-y-4">
       <PageHeader
         title="System health"
-        description="Operational metrics and processing health for the active organization."
+        description="Operational metrics and processing health for the active organization. Many metrics are populated by background jobs (Admin → Jobs) or after CDR imports; 0 or — means no recent activity or the job has not run yet."
         right={
           <Button
             variant="outline"
@@ -123,8 +123,19 @@ export default function SystemHealthPage() {
       </div>
 
       {data && data.length === 0 ? (
-        <EmptyState title="No metrics yet" description="Run jobs (or wait for cron) to populate system metrics." />
+        <EmptyState title="No metrics yet" description="Click Refresh to compute metrics from current data (open alerts, enabled rules, CDR ingestion rate). Run Admin → Jobs (Rule evaluation, CDR aggregation, Pipeline) to fill the rest." />
       ) : null}
+
+      <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+        <strong className="text-foreground">Why are some values 0 or —?</strong>
+        <ul className="mt-2 list-inside list-disc space-y-1">
+          <li><strong>CDR ingestion rate</strong> — 0 if no CDRs were created in the last 5 minutes.</li>
+          <li><strong>Processing latency</strong> — From recent imports with start/end times; seed data often has none, so it shows 0.</li>
+          <li><strong>Alerts generated / Rules evaluated</strong> — Filled when the <em>Rule evaluation</em> job runs (Alerts → Run evaluation, or Admin → Jobs).</li>
+          <li><strong>Pipeline queue depth / failures</strong> — Filled when the <em>Pipeline</em> job runs.</li>
+          <li><strong>Aggregation latency</strong> — Filled when the <em>CDR aggregation</em> job runs.</li>
+        </ul>
+      </div>
     </div>
   );
 }

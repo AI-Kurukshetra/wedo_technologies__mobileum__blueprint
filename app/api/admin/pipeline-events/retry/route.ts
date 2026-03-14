@@ -22,6 +22,24 @@ export async function POST(req: Request) {
     const role = await getOrgRoleForUser({ supabase: supabase as any, orgId, userId: user.id });
     if (role !== "admin") return NextResponse.json({ error: "Admin role required" }, { status: 403 });
 
+    const { data: existing, error: fetchErr } = await supabase
+      .from("pipeline_events")
+      .select("id,status")
+      .eq("org_id", orgId)
+      .eq("id", eventId)
+      .maybeSingle();
+    if (fetchErr) return NextResponse.json({ error: fetchErr.message }, { status: 400 });
+    if (!existing) return NextResponse.json({ error: "Event not found" }, { status: 404 });
+
+    const status = (existing as any).status;
+    const allowedRetry = ["failed", "dead_lettered", "processed"];
+    if (!allowedRetry.includes(status)) {
+      return NextResponse.json(
+        { error: `Cannot retry event with status "${status}". Retry is only allowed for failed, dead_lettered, or processed events.` },
+        { status: 400 }
+      );
+    }
+
     const { error } = await supabase
       .from("pipeline_events")
       .update({
@@ -29,7 +47,9 @@ export async function POST(req: Request) {
         locked_at: null,
         locked_by: null,
         next_attempt_at: null,
-        dead_lettered_at: null
+        dead_lettered_at: null,
+        processed_at: null,
+        last_error: null
       })
       .eq("org_id", orgId)
       .eq("id", eventId);
